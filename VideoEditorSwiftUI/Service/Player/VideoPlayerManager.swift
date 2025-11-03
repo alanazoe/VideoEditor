@@ -24,6 +24,7 @@ final class VideoPlayerManager: ObservableObject{
     private var cancellable = Set<AnyCancellable>()
     private var timeObserver: Any?
     private var currentDurationRange: ClosedRange<Double>?
+    private var itemStatusObserver: NSKeyValueObservation?
     
     
     deinit {
@@ -71,16 +72,43 @@ final class VideoPlayerManager: ObservableObject{
         $loadState
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            
-            .sink {[weak self] returnLoadState in
-                guard let self = self else {return}
-                
+            .sink { [weak self] returnLoadState in
+                guard let self = self else { return }
+
                 switch returnLoadState {
                 case .loaded(let url):
-                    self.pause()
-                    self.videoPlayer = AVPlayer(url: url)
-                    self.startStatusSubscriptions()
-                    print("AVPlayer set url:", url.absoluteString)
+                    print("[VideoPlayer] loadState .loaded URL=\(url.absoluteString)")
+
+                    // Quick sanity checks on the file before handing to AVFoundation.
+                    let path = url.path
+                    let exists = FileManager.default.fileExists(atPath: path)
+                    var sizeDesc = "unknown"
+                    if exists {
+                        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                           let size = attrs[.size] as? NSNumber {
+                            sizeDesc = "\(size.intValue) bytes"
+                        }
+                    }
+                    print("[VideoPlayer] file exists=\(exists) size=\(sizeDesc)")
+
+                    // If the saved absolute path is stale (e.g., app reinstalled; different container),
+                    // try to resolve the file by filename within the current sandbox.
+                    let finalURL: URL
+                    if !exists {
+                        if let resolved = self.resolvePlayableURL(url) {
+                            print("[VideoPlayer][RESOLVE] Remapped stale path to current container: \(resolved.path)")
+                            finalURL = resolved
+                        } else {
+                            print("[VideoPlayer][RESOLVE][ERR] Could not resolve file: \(url.lastPathComponent)")
+                            self.loadState = .failed
+                            return
+                        }
+                    } else {
+                        finalURL = url
+                    }
+
+                    self.preparePlayer(with: finalURL)
+
                 case .failed, .loading, .unknown:
                     break
                 }
@@ -88,28 +116,131 @@ final class VideoPlayerManager: ObservableObject{
             .store(in: &cancellable)
     }
     
+    private func preparePlayer(with url: URL) {
+        // Pause current playback and remove old observers
+        pause()
+        removeTimeObserver()
+
+        // Build an AVURLAsset and load the critical keys we need.
+        let asset = AVURLAsset(url: url, options: [
+            AVURLAssetPreferPreciseDurationAndTimingKey: true
+        ])
+
+        let keys = ["playable", "duration", "tracks", "hasProtectedContent"]
+        asset.loadValuesAsynchronously(forKeys: keys) { [weak self] in
+            guard let self = self else { return }
+
+            var error: NSError?
+            let playableStatus = asset.statusOfValue(forKey: "playable", error: &error)
+            let durationStatus = asset.statusOfValue(forKey: "duration", error: nil)
+            let tracksStatus = asset.statusOfValue(forKey: "tracks", error: nil)
+
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("[VideoPlayer][ASSET][ERR] loadValues error=\(error)")
+                }
+                // Guard against common failure cases
+                if playableStatus != .loaded || !asset.isPlayable || asset.hasProtectedContent {
+                    print("[VideoPlayer][ASSET][ERR] not playable. playableStatus=\(playableStatus.rawValue) isPlayable=\(asset.isPlayable) hasProtectedContent=\(asset.hasProtectedContent)")
+                    self.loadState = .failed
+                    return
+                }
+                if durationStatus != .loaded || tracksStatus != .loaded {
+                    print("[VideoPlayer][ASSET][WARN] durationStatus=\(durationStatus.rawValue) tracksStatus=\(tracksStatus.rawValue)")
+                }
+
+                // Create a fresh item from the validated asset and observe readiness
+                let item = AVPlayerItem(asset: asset)
+                self.itemStatusObserver?.invalidate()
+                self.videoPlayer.replaceCurrentItem(with: item)
+                self.videoPlayer.automaticallyWaitsToMinimizeStalling = true
+
+                self.startStatusSubscriptions()
+
+                if let currentItem = self.videoPlayer.currentItem {
+                    self.observeItemStatus(currentItem)
+                    print("[VideoPlayer] currentItem duration=\(currentItem.asset.duration.seconds)")
+                } else {
+                    print("[VideoPlayer][WARN] currentItem is nil after replaceCurrentItem")
+                }
+            }
+        }
+    }
+    
+    /// Attempts to resolve a stale file URL (from an old sandbox container) by matching on the filename
+    /// within known writable directories of the current app (Documents, Library/Caches, tmp, and an optional "Videos" folder).
+    private func resolvePlayableURL(_ staleURL: URL) -> URL? {
+        let filename = staleURL.lastPathComponent
+        guard !filename.isEmpty else { return nil }
+
+        let fm = FileManager.default
+        var candidates: [URL] = []
+
+        // Documents
+        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            candidates.append(docs)
+            candidates.append(docs.appendingPathComponent("Videos", isDirectory: true))
+        }
+        // Library/Caches
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            candidates.append(caches)
+            candidates.append(caches.appendingPathComponent("Videos", isDirectory: true))
+        }
+        // tmp
+        candidates.append(URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true))
+
+        for dir in candidates {
+            let candidate = dir.appendingPathComponent(filename)
+            if fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        // As a last resort, try to locate by enumerating Documents and Caches for matching filenames.
+        let searchRoots = candidates
+        for root in searchRoots {
+            if let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+                for case let fileURL as URL in enumerator {
+                    if fileURL.lastPathComponent == filename, fm.fileExists(atPath: fileURL.path) {
+                        return fileURL
+                    }
+                }
+            }
+        }
+        return nil
+    }
+    
     
     private func startStatusSubscriptions(){
+        print("[VideoPlayer] startStatusSubscriptions")
         videoPlayer.publisher(for: \.timeControlStatus)
             .sink { [weak self] status in
                 guard let self = self else {return}
                 switch status {
                 case .playing:
+                    print("[VideoPlayer] timeControlStatus=playing, rate=\(self.videoPlayer.rate)")
                     self.isPlaying = true
                     self.startTimer()
                 case .paused:
+                    print("[VideoPlayer] timeControlStatus=paused")
                     self.isPlaying = false
                 case .waitingToPlayAtSpecifiedRate:
-                    break
+                    print("[VideoPlayer] timeControlStatus=waitingToPlayAtSpecifiedRate")
                 @unknown default:
-                    break
+                    print("[VideoPlayer][WARN] timeControlStatus unknown")
                 }
             }
             .store(in: &cancellable)
+
+        // Also observe currentItem status via KVO to know when it's ready
+        if let item = videoPlayer.currentItem {
+            observeItemStatus(item)
+        }
     }
     
     
     func pause(){
+        print("[VideoPlayer] pause() isPlaying=\(isPlaying)")
         if isPlaying{
             videoPlayer.pause()
             if isSetAudio{
@@ -128,16 +259,18 @@ final class VideoPlayerManager: ObservableObject{
     }
 
     private func play(_ rate: Float?){
-        
+        print("[VideoPlayer] play(rate=\(String(describing: rate))) currentTime=\(videoPlayer.currentTime().seconds)")
         AVAudioSession.sharedInstance().configurePlaybackSession()
         
         if let currentDurationRange{
             if currentTime >= currentDurationRange.upperBound{
+                print("[VideoPlayer] seek to lowerBound=\(currentDurationRange.lowerBound)")
                 seek(currentDurationRange.lowerBound, player: videoPlayer)
                 if isSetAudio{
                     seek(currentDurationRange.lowerBound, player: audioPlayer)
                 }
             }else{
+                print("[VideoPlayer] resume seek to current video time=\(videoPlayer.currentTime().seconds)")
                 seek(videoPlayer.currentTime().seconds, player: videoPlayer)
                 if isSetAudio{
                     seek(audioPlayer.currentTime().seconds, player: audioPlayer)
@@ -154,6 +287,7 @@ final class VideoPlayerManager: ObservableObject{
             if isSetAudio{
                 audioPlayer.play()
             }
+            print("[VideoPlayer] set rate=\(rate)")
         }
         
         if let currentDurationRange, videoPlayer.currentItem?.duration.seconds ?? 0 >= currentDurationRange.upperBound{
@@ -164,6 +298,7 @@ final class VideoPlayerManager: ObservableObject{
     }
     
     private func seek(_ seconds: Double, player: AVPlayer){
+        print("[VideoPlayer] seek(to=\(seconds)) for \(player === videoPlayer ? "video" : "audio")")
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
     
@@ -193,15 +328,39 @@ final class VideoPlayerManager: ObservableObject{
     
     
     private func playerDidFinishPlaying() {
+        print("[VideoPlayer] didPlayToEnd -> seek to zero")
         self.videoPlayer.seek(to: .zero)
     }
     
     private func removeTimeObserver(){
         if let timeObserver = timeObserver {
             videoPlayer.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
         }
     }
     
+}
+
+// MARK: - KVO for item readiness
+private extension VideoPlayerManager {
+    func observeItemStatus(_ item: AVPlayerItem) {
+        itemStatusObserver?.invalidate()
+        itemStatusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, change in
+            guard let self = self else { return }
+            switch item.status {
+            case .unknown:
+                print("[VideoPlayer][ITEM] status=unknown")
+            case .readyToPlay:
+                print("[VideoPlayer][ITEM] status=readyToPlay, duration=\(item.duration.seconds)")
+                // Seek to 0 so the first frame is rendered
+                self.seek(0, player: self.videoPlayer)
+            case .failed:
+                print("[VideoPlayer][ITEM][ERR] status=failed: \(String(describing: item.error))")
+            @unknown default:
+                print("[VideoPlayer][ITEM][WARN] status unknown")
+            }
+        }
+    }
 }
 
 extension VideoPlayerManager{
@@ -212,11 +371,14 @@ extension VideoPlayerManager{
             loadState = .loading
 
             if let video = try await selectedItem?.loadTransferable(type: VideoItem.self) {
+                print("[VideoPlayer] loadVideoItem loaded URL=\(video.url)")
                 loadState = .loaded(video.url)
             } else {
+                print("[VideoPlayer][ERR] loadVideoItem failed: no video transferable")
                 loadState = .failed
             }
         } catch {
+            print("[VideoPlayer][ERR] loadVideoItem exception: \(error)")
             loadState = .failed
         }
     }
@@ -227,6 +389,10 @@ extension VideoPlayerManager{
     
 
     func setFilters(mainFilter: CIFilter?, colorCorrection: ColorCorrection?){
+        guard videoPlayer.currentItem != nil else {
+            print("[VideoPlayer][FILTERS][SKIP] No currentItem yet")
+            return
+        }
        
         let filters = Helpers.createFilters(mainFilter: mainFilter, colorCorrection)
         
@@ -237,12 +403,14 @@ extension VideoPlayerManager{
         DispatchQueue.global(qos: .userInteractive).async {
             let composition = self.videoPlayer.currentItem?.asset.setFilters(filters)
             self.videoPlayer.currentItem?.videoComposition = composition
+            print("[VideoPlayer] filters applied: count=\(filters.count)")
         }
     }
         
     func removeFilter(){
         pause()
         videoPlayer.currentItem?.videoComposition = nil
+        print("[VideoPlayer] filters removed")
     }
 }
 

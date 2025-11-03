@@ -37,8 +37,10 @@ struct MainEditorView: View {
                 }
             }
             
-            if showVideoQualitySheet, let video = editorVM.currentVideo{
-                VideoExporterBottomSheetView(isPresented: $showVideoQualitySheet, video: video)
+            if showVideoQualitySheet {
+                if let video = editorVM.currentClip {
+                    VideoExporterBottomSheetView(isPresented: $showVideoQualitySheet, video: video)
+                }
             }
         }
         .background(Color.black)
@@ -73,11 +75,12 @@ struct RootView_Previews: PreviewProvider {
 extension MainEditorView{
     private var headerView: some View{
         HStack{
+ 
             Button {
                 editorVM.updateProject()
                 dismiss()
             } label: {
-                Image(systemName: "folder.fill")
+                Image(systemName: "chevron.left")
             }
 
             Spacer()
@@ -108,19 +111,23 @@ extension MainEditorView{
     
     private func setVideo(_ proxy: GeometryProxy){
         if let selectedVideoURl{
-            videoPlayer.loadState = .loaded(selectedVideoURl)
-            editorVM.setNewVideo(selectedVideoURl, geo: proxy)
+            // Copy any external URL into sandbox to avoid security-scoped playback failures
+            let localURL = (try? editorVM.copyToSandbox(url: selectedVideoURl)) ?? selectedVideoURl
+            print("[MainEditor] initial selectedVideoURL=\(selectedVideoURl) -> local=\(localURL)")
+            videoPlayer.loadState = .loaded(localURL)
+            editorVM.setNewVideo(localURL, geo: proxy)
         }
         
         if let project, let url = project.videoURL{
             videoPlayer.loadState = .loaded(url)
             editorVM.setProject(project, geo: proxy)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1){
-                videoPlayer.setFilters(mainFilter: CIFilter(name: project.filterName ?? ""), colorCorrection: editorVM.currentVideo?.colorCorrection)
+                videoPlayer.setFilters(mainFilter: CIFilter(name: project.filterName ?? ""), colorCorrection: editorVM.currentClip?.colorCorrection)
             }
+        }
+        // If project holds multiple clips, ensure the player is pointed to the currently selected clip
+        if let url = editorVM.currentClip?.url {
+            videoPlayer.loadState = .loaded(url)
         }
     }
 }
-
-
-

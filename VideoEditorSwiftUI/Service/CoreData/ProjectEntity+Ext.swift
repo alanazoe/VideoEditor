@@ -81,7 +81,8 @@ extension ProjectEntity{
     }
     
     
-    static func create(video: Video, context: NSManagedObjectContext){
+    @discardableResult
+    static func create(video: Video, context: NSManagedObjectContext) -> ProjectEntity {
         let project = ProjectEntity(context: context)
         let id = UUID().uuidString
         if let image = video.thumbnailsImages.first?.image{
@@ -99,6 +100,7 @@ extension ProjectEntity{
         project.textBoxes = []
     
         context.saveContext()
+        return project
     }
     
     

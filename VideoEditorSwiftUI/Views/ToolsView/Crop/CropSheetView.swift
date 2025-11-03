@@ -24,9 +24,9 @@ struct CropSheetView: View {
             }
         }
         .onAppear{
-            rotateValue = editorVM.currentVideo?.rotation ?? 0
+            rotateValue = editorVM.currentClip?.rotation ?? 0
         }
-        .onChange(of: editorVM.currentVideo?.rotation) { newValue in
+        .onChange(of: editorVM.currentClip?.rotation) { newValue in
             rotateValue = newValue ?? 0
         }
     }
@@ -52,7 +52,7 @@ extension CropSheetView{
                          step: 90,
                          onEditingChanged: { started in
                 if !started{
-                    editorVM.currentVideo?.rotation = rotateValue
+                    editorVM.currentClip?.rotation = rotateValue
                     editorVM.setTools()
                 }
             }, track: {
@@ -77,7 +77,7 @@ extension CropSheetView{
                 editorVM.toggleMirror()
             } label: {
                 Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
-                    .foregroundColor((editorVM.currentVideo?.isMirror ?? false) ? .secondary : .white)
+                    .foregroundColor((editorVM.currentClip?.isMirror ?? false) ? .secondary : .white)
             }
             .buttonStyle(.plain)
         }

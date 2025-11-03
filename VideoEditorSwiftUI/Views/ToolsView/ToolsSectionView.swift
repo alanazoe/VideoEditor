@@ -16,22 +16,25 @@ struct ToolsSectionView: View {
     private let columns = Array(repeating: GridItem(.flexible()), count: 4)
     var body: some View {
         ZStack{
-            LazyVGrid(columns: columns, alignment: .center, spacing: 8) {
-                ForEach(ToolEnum.allCases, id: \.self) { tool in
-                    ToolButtonView(label: tool.title, image: tool.image, isChange: editorVM.currentVideo?.isAppliedTool(for: tool) ?? false) {
-                        editorVM.selectedTools = tool
+            ScrollView(.horizontal){
+                HStack( spacing: 8) {
+                    ForEach(ToolEnum.allCases, id: \.self) { tool in
+                        ToolButtonView(label: tool.title, image: tool.image, isChange: editorVM.currentClip?.isAppliedTool(for: tool) ?? false) {
+                            editorVM.selectedTools = tool
+                        }
                     }
                 }
+                .padding()
+                .opacity(editorVM.selectedTools != nil ? 0 : 1)
             }
-            .padding()
-            .opacity(editorVM.selectedTools != nil ? 0 : 1)
-            if let toolState = editorVM.selectedTools, let video = editorVM.currentVideo{
+            .scrollIndicators(.hidden)
+            if let toolState = editorVM.selectedTools, let video = editorVM.currentClip{
                 bottomSheet(toolState, video)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.easeIn(duration: 0.15), value: editorVM.selectedTools)
-        .onChange(of: editorVM.currentVideo){ newValue in
+        .onChange(of: editorVM.currentClip){ newValue in
             if let video = newValue, let image = video.thumbnailsImages.first?.image{
                 filtersVM.loadFilters(for: image)
                 filtersVM.colorCorrection = video.colorCorrection
@@ -50,7 +53,7 @@ struct ToolsSectionView: View {
         .onChange(of: editorVM.selectedTools) { newValue in
             
             if newValue == .text, textEditor.textBoxes.isEmpty{
-                textEditor.openTextEditor(isEdit: false, timeRange: editorVM.currentVideo?.rangeDuration)
+                textEditor.openTextEditor(isEdit: false, timeRange: editorVM.currentClip?.rangeDuration)
             }
             
             if newValue == nil{
@@ -78,8 +81,8 @@ extension ToolsSectionView{
             
             sheetHeader(tool)
             switch tool {
-            case .cut:
-                ThumbnailsSliderView(curretTime: $videoPlayer.currentTime, video: $editorVM.currentVideo, isChangeState: isAppliedTool) {
+            case .trim:
+                ThumbnailsSliderView(curretTime: $videoPlayer.currentTime, video: $editorVM.currentClip, isChangeState: isAppliedTool) {
                     videoPlayer.scrubState = .scrubEnded(videoPlayer.currentTime)
                     editorVM.setTools()
                 }
@@ -108,8 +111,7 @@ extension ToolsSectionView{
                     videoPlayer.setFilters(mainFilter: CIFilter(name: video.filterName ?? ""), colorCorrection: corrections)
                     editorVM.setCorrections(corrections)
                 }
-            case .frames:
-                FramesToolView(selectedColor: $editorVM.frames.frameColor, scaleValue: $editorVM.frames.scaleValue, onChange: editorVM.setFrames)
+          
             }
             Spacer()
         }

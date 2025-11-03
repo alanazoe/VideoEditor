@@ -27,7 +27,7 @@ struct ToolButtonView: View {
                 Text(label)
                     .font(.caption)
             }
-            .frame(height: 85)
+            .frame(width: 85, height: 85)
             .hCenter()
             .background(bgColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }

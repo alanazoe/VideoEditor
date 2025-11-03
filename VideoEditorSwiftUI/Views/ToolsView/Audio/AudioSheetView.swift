@@ -41,9 +41,8 @@ struct AudioSheetView_Previews: PreviewProvider {
 
 extension AudioSheetView{
     
-    
     private func setValue(){
-        guard let video = editorVM.currentVideo else {return}
+        guard let video = editorVM.currentClip else {return}
         if editorVM.isSelectVideo{
             videoVolume = video.volume
         }else if let audio = video.audio{
@@ -53,9 +52,9 @@ extension AudioSheetView{
     
     private func onChange(){
         if editorVM.isSelectVideo{
-            editorVM.currentVideo?.setVolume(videoVolume)
+            editorVM.currentClip?.setVolume(videoVolume)
         }else {
-            editorVM.currentVideo?.audio?.setVolume(audioVolume)
+            editorVM.currentClip?.audio?.setVolume(audioVolume)
         }
         videoPlayer.setVolume(editorVM.isSelectVideo, value: value.wrappedValue)
     }

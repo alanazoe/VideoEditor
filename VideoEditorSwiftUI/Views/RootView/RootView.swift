@@ -23,10 +23,9 @@ struct RootView: View {
             ZStack {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading) {
-                        Text("My projects")
-                            .font(.headline)
+                
                         LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
-                            newProjectButton
+                         //   newProjectButton
                             
                             ForEach(rootVM.projects) { project in
                                 
@@ -46,7 +45,7 @@ struct RootView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Text("Video editor")
+                    Text("Drafts")
                         .font(.title2.bold())
                 }
             }
